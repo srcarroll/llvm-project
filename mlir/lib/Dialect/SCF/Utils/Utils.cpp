@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -351,93 +352,31 @@ static void generateUnrolledLoop(
   loopBodyBlock->getTerminator()->setOperands(lastYielded);
 }
 
-/// Unrolls 'forOp' by 'unrollFactor', returns success if the loop is unrolled.
-LogicalResult mlir::loopUnrollByFactor(
-    scf::ForOp forOp, uint64_t unrollFactor,
-    function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn) {
-  assert(unrollFactor > 0 && "expected positive unroll factor");
+std::optional<int64_t> getConstantTripCount(scf::ForOp forOp) {
+  std::optional<int64_t> lb = getConstantIntValue(forOp.getLowerBound());
+  std::optional<int64_t> ub = getConstantIntValue(forOp.getUpperBound());
+  std::optional<int64_t> step = getConstantIntValue(forOp.getStep());
+  if (lb && ub && step)
+    return mlir::ceilDiv(ub.value() - lb.value(), step.value());
+  return std::nullopt;
+}
 
-  // Return if the loop body is empty.
-  if (llvm::hasSingleElement(forOp.getBody()->getOperations()))
-    return success();
-
-  // Compute tripCount = ceilDiv((upperBound - lowerBound), step) and populate
-  // 'upperBoundUnrolled' and 'stepUnrolled' for static and dynamic cases.
-  OpBuilder boundsBuilder(forOp);
-  IRRewriter rewriter(forOp.getContext());
-  auto loc = forOp.getLoc();
-  Value step = forOp.getStep();
-  Value upperBoundUnrolled;
-  Value stepUnrolled;
-  bool generateEpilogueLoop = true;
-
-  std::optional<int64_t> lbCstOp = getConstantIntValue(forOp.getLowerBound());
-  std::optional<int64_t> ubCstOp = getConstantIntValue(forOp.getUpperBound());
-  std::optional<int64_t> stepCstOp = getConstantIntValue(forOp.getStep());
-  if (lbCstOp && ubCstOp && stepCstOp) {
-    // Constant loop bounds computation.
-    int64_t lbCst = lbCstOp.value();
-    int64_t ubCst = ubCstOp.value();
-    int64_t stepCst = stepCstOp.value();
-    assert(lbCst >= 0 && ubCst >= 0 && stepCst >= 0 &&
-           "expected positive loop bounds and step");
-    int64_t tripCount = mlir::ceilDiv(ubCst - lbCst, stepCst);
-
-    if (unrollFactor == 1) {
-      if (tripCount == 1 && failed(forOp.promoteIfSingleIteration(rewriter)))
-        return failure();
-      return success();
-    }
-
+/// Helper to generate cleanup loop for unroll or unroll-and-jam when the trip
+/// count is not a multiple of `unrollFactor`.
+static LogicalResult generateCleanupLoopForUnroll(scf::ForOp forOp,
+                                                  uint64_t unrollFactor) {
+    IRRewriter epilogueBuilder(forOp->getContext());
+    epilogueBuilder.setInsertionPoint(forOp);
+    int64_t tripCount = getConstantTripCount(forOp).value();
     int64_t tripCountEvenMultiple = tripCount - (tripCount % unrollFactor);
-    int64_t upperBoundUnrolledCst = lbCst + tripCountEvenMultiple * stepCst;
-    int64_t stepUnrolledCst = stepCst * unrollFactor;
+    int64_t upperBoundUnrolledCst = getConstantIntValue(forOp.getLowerBound()).value() + tripCountEvenMultiple * getConstantIntValue(forOp.getStep()).value();
+    Value upperBoundUnrolled = epilogueBuilder.create<arith::ConstantIndexOp>(forOp.getLoc(), upperBoundUnrolledCst);
 
-    // Create constant for 'upperBoundUnrolled' and set epilogue loop flag.
-    generateEpilogueLoop = upperBoundUnrolledCst < ubCst;
-    if (generateEpilogueLoop)
-      upperBoundUnrolled = boundsBuilder.create<arith::ConstantIndexOp>(
-          loc, upperBoundUnrolledCst);
-    else
-      upperBoundUnrolled = forOp.getUpperBound();
-
-    // Create constant for 'stepUnrolled'.
-    stepUnrolled = stepCst == stepUnrolledCst
-                       ? step
-                       : boundsBuilder.create<arith::ConstantIndexOp>(
-                             loc, stepUnrolledCst);
-  } else {
-    // Dynamic loop bounds computation.
-    // TODO: Add dynamic asserts for negative lb/ub/step, or
-    // consider using ceilDiv from AffineApplyExpander.
-    auto lowerBound = forOp.getLowerBound();
-    auto upperBound = forOp.getUpperBound();
-    Value diff =
-        boundsBuilder.create<arith::SubIOp>(loc, upperBound, lowerBound);
-    Value tripCount = ceilDivPositive(boundsBuilder, loc, diff, step);
-    Value unrollFactorCst =
-        boundsBuilder.create<arith::ConstantIndexOp>(loc, unrollFactor);
-    Value tripCountRem =
-        boundsBuilder.create<arith::RemSIOp>(loc, tripCount, unrollFactorCst);
-    // Compute tripCountEvenMultiple = tripCount - (tripCount % unrollFactor)
-    Value tripCountEvenMultiple =
-        boundsBuilder.create<arith::SubIOp>(loc, tripCount, tripCountRem);
-    // Compute upperBoundUnrolled = lowerBound + tripCountEvenMultiple * step
-    upperBoundUnrolled = boundsBuilder.create<arith::AddIOp>(
-        loc, lowerBound,
-        boundsBuilder.create<arith::MulIOp>(loc, tripCountEvenMultiple, step));
-    // Scale 'step' by 'unrollFactor'.
-    stepUnrolled =
-        boundsBuilder.create<arith::MulIOp>(loc, step, unrollFactorCst);
-  }
-
-  // Create epilogue clean up loop starting at 'upperBoundUnrolled'.
-  if (generateEpilogueLoop) {
-    OpBuilder epilogueBuilder(forOp->getContext());
     epilogueBuilder.setInsertionPoint(forOp->getBlock(),
-                                      std::next(Block::iterator(forOp)));
+                                  std::next(Block::iterator(forOp)));
     auto epilogueForOp = cast<scf::ForOp>(epilogueBuilder.clone(*forOp));
     epilogueForOp.setLowerBound(upperBoundUnrolled);
+    forOp.setUpperBound(upperBoundUnrolled);
 
     // Update uses of loop results.
     auto results = forOp.getResults();
@@ -448,23 +387,75 @@ LogicalResult mlir::loopUnrollByFactor(
     }
     epilogueForOp->setOperands(epilogueForOp.getNumControlOperands(),
                                epilogueForOp.getInitArgs().size(), results);
-    (void)epilogueForOp.promoteIfSingleIteration(rewriter);
+    (void)epilogueForOp.promoteIfSingleIteration(epilogueBuilder);
+    return success();  
+}                                               
+
+/// Unrolls 'forOp' by 'unrollFactor', returns success if the loop is unrolled.
+LogicalResult mlir::loopUnrollByFactor(
+    scf::ForOp forOp, uint64_t unrollFactor,
+    function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn) {
+  assert(unrollFactor > 0 && "expected positive unroll factor");
+  IRRewriter rewriter(forOp.getContext());
+  auto loc = forOp.getLoc();
+  std::optional<uint64_t> mayBeConstantTripCount = getConstantTripCount(forOp);
+  Value oldStep = forOp.getStep();
+
+  if (unrollFactor == 1) {
+    RewriterBase::InsertionGuard guard(rewriter);
+    if (mayBeConstantTripCount && *mayBeConstantTripCount == 1 &&
+        failed(forOp.promoteIfSingleIteration(rewriter)))
+      return failure();
+    return success();
   }
 
-  // Create unrolled loop.
-  forOp.setUpperBound(upperBoundUnrolled);
-  forOp.setStep(stepUnrolled);
+  // Return if the loop body is empty.
+  if (llvm::hasSingleElement(forOp.getBody()->getOperations()))
+    return success();
 
-  auto iterArgs = ValueRange(forOp.getRegionIterArgs());
+  // If the trip count is lower than the unroll factor, no unrolled body.
+  // if (mayBeConstantTripCount && *mayBeConstantTripCount < unrollFactor) {
+  //   if (/*cleanUpUnroll=*/false) {
+  //     // Unroll the cleanup loop if cleanUpUnroll is specified.
+  //     return loopUnrollFull(forOp);
+  //   }
+
+  //   return failure();
+  // }
+
+  // Generate the cleanup loop if trip count isn't a multiple of unrollFactor.
+  if (!mayBeConstantTripCount)
+    return failure();
+  {
+    RewriterBase::InsertionGuard guard(rewriter);
+    uint64_t tripCount = mayBeConstantTripCount.value();
+    int64_t tripCountEvenMultiple = tripCount - (tripCount % unrollFactor);
+    int64_t upperBoundUnrolledCst = getConstantIntValue(forOp.getLowerBound()).value() + tripCountEvenMultiple * getConstantIntValue(forOp.getStep()).value();
+    if (upperBoundUnrolledCst < getConstantIntValue(forOp.getUpperBound()).value()) {
+      if (failed(generateCleanupLoopForUnroll(forOp, unrollFactor)))
+        assert(false && "cleanup loop lower bound map for single result lower "
+                        "and upper bound maps can always be determined");
+    }
+  }
+
+  ValueRange iterArgs(forOp.getRegionIterArgs());
   auto yieldedValues = forOp.getBody()->getTerminator()->getOperands();
 
+  // Scale the step of loop being unrolled by unroll factor.
+  int64_t step = forOp.getConstantStep().value().getSExtValue() * unrollFactor;
+  rewriter.setInsertionPoint(forOp);
+  Value stepC = rewriter.create<arith::ConstantIndexOp>(loc, step);
+  forOp.setStep(stepC);
   generateUnrolledLoop(
       forOp.getBody(), forOp.getInductionVar(), unrollFactor,
       [&](unsigned i, Value iv, OpBuilder b) {
         // iv' = iv + step * i;
         auto stride = b.create<arith::MulIOp>(
-            loc, step, b.create<arith::ConstantIndexOp>(loc, i));
+            loc, oldStep, b.create<arith::ConstantIndexOp>(loc, i));
         return b.create<arith::AddIOp>(loc, iv, stride);
+        // auto d0 = b.getAffineDimExpr(0);
+        // auto bumpMap = AffineMap::get(1, 0, d0 + i * step);
+        // return b.create<affine::AffineApplyOp>(forOp.getLoc(), bumpMap, iv);
       },
       annotateFn, iterArgs, yieldedValues);
   // Promote the loop body up if this has turned into a single iteration loop.
