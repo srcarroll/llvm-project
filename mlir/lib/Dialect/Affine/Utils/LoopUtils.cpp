@@ -1018,20 +1018,15 @@ LogicalResult mlir::affine::loopUnrollByFactor(
     function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn,
     bool cleanUpUnroll) {
   assert(unrollFactor > 0 && "unroll factor should be positive");
-
-  std::optional<uint64_t> mayBeConstantTripCount = getConstantTripCount(forOp);
-  if (unrollFactor == 1) {
-    if (mayBeConstantTripCount && *mayBeConstantTripCount == 1 &&
-        failed(promoteIfSingleIteration(forOp)))
-      return failure();
+  if (unrollFactor == 1)
     return success();
-  }
 
   // Nothing in the loop body other than the terminator.
   if (llvm::hasSingleElement(forOp.getBody()->getOperations()))
     return success();
 
   // If the trip count is lower than the unroll factor, no unrolled body.
+  std::optional<uint64_t> mayBeConstantTripCount = getConstantTripCount(forOp);
   if (mayBeConstantTripCount && *mayBeConstantTripCount < unrollFactor) {
     if (cleanUpUnroll) {
       // Unroll the cleanup loop if cleanUpUnroll is specified.

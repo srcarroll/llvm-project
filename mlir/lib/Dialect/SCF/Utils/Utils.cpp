@@ -404,10 +404,6 @@ LogicalResult mlir::loopUnrollByFactor(
     scf::ForOp forOp, uint64_t unrollFactor,
     function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn) {
     assert(unrollFactor > 0 && "unroll factor should be positive");
-
-    auto loc = forOp.getLoc();
-    auto step = forOp.getStep();
-
     if (unrollFactor == 1)
       return success();
 
@@ -424,6 +420,9 @@ LogicalResult mlir::loopUnrollByFactor(
 
     //   return failure();
     // }
+
+    auto loc = forOp.getLoc();
+    auto step = forOp.getStep();
 
     if (failed(generateCleanupLoopForUnroll(forOp, unrollFactor)))
       assert(false && "cleanup loop lower bound map for single result lower "
