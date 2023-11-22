@@ -352,15 +352,6 @@ static void generateUnrolledLoop(
   loopBodyBlock->getTerminator()->setOperands(lastYielded);
 }
 
-std::optional<int64_t> getConstantTripCount(scf::ForOp forOp) {
-  std::optional<int64_t> lb = getConstantIntValue(forOp.getLowerBound());
-  std::optional<int64_t> ub = getConstantIntValue(forOp.getUpperBound());
-  std::optional<int64_t> step = getConstantIntValue(forOp.getStep());
-  if (lb && ub && step)
-    return mlir::ceilDiv(ub.value() - lb.value(), step.value());
-  return std::nullopt;
-}
-
 /// Helper to generate cleanup loop for unroll or unroll-and-jam when the trip
 /// count is not a multiple of `unrollFactor`.
 static LogicalResult generateCleanupLoopForUnroll(scf::ForOp forOp,
