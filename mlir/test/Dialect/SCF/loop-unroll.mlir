@@ -199,9 +199,9 @@ func.func @static_loop_step_2_unroll_by_2(%arg0 : memref<?xf32>) {
 //
 //   UNROLL-BY-2-DAG:  %[[C0:.*]] = arith.constant 0 : index
 //   UNROLL-BY-2-DAG:  %[[C2:.*]] = arith.constant 2 : index
-//   UNROLL-BY-2-DAG:  %[[C19:.*]] = arith.constant 19 : index
+//   UNROLL-BY-2-DAG:  %[[C20:.*]] = arith.constant 20 : index
 //   UNROLL-BY-2-DAG:  %[[C4:.*]] = arith.constant 4 : index
-//   UNROLL-BY-2:  scf.for %[[IV:.*]] = %[[C0]] to %[[C19]] step %[[C4]] {
+//   UNROLL-BY-2:  scf.for %[[IV:.*]] = %[[C0]] to %[[C20]] step %[[C4]] {
 //  UNROLL-BY-2-NEXT:    memref.store %{{.*}}, %[[MEM]][%[[IV]]] : memref<?xf32>
 //  UNROLL-BY-2-NEXT:    %[[V1:.*]] = arith.addi %[[IV]], %[[C2]] : index
 //  UNROLL-BY-2-NEXT:    memref.store %{{.*}}, %[[MEM]][%[[V1]]] : memref<?xf32>
