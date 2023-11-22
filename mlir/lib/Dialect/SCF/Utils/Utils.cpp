@@ -412,21 +412,42 @@ static LogicalResult generateCleanupLoopForUnroll(scf::ForOp forOp,
 LogicalResult mlir::loopUnrollByFactor(
     scf::ForOp forOp, uint64_t unrollFactor,
     function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn) {
+    assert(unrollFactor > 0 && "unroll factor should be positive");
+
     auto loc = forOp.getLoc();
-    IRRewriter boundsBuilder(forOp.getContext());
-    boundsBuilder.setInsertionPoint(forOp);
     auto step = forOp.getStep();
-    Value unrollFactorCst =
-        boundsBuilder.create<arith::ConstantIndexOp>(loc, unrollFactor);
-    // Scale 'step' by 'unrollFactor'.
-    Value stepUnrolled =
-        boundsBuilder.create<arith::MulIOp>(loc, step, unrollFactorCst);
+
+    if (unrollFactor == 1)
+      return success();
+
+    // Nothing in the loop body other than the terminator.
+    if (llvm::hasSingleElement(forOp.getBody()->getOperations()))
+      return success();
+
+    // If the trip count is lower than the unroll factor, no unrolled body.
+    // if (mayBeConstantTripCount && *mayBeConstantTripCount < unrollFactor) {
+    //   if (cleanUpUnroll) {
+    //     // Unroll the cleanup loop if cleanUpUnroll is specified.
+    //     return loopUnrollFull(forOp);
+    //   }
+
+    //   return failure();
+    // }
 
     if (failed(generateCleanupLoopForUnroll(forOp, unrollFactor)))
       assert(false && "cleanup loop lower bound map for single result lower "
                       "and upper bound maps can always be determined");
+
     ValueRange iterArgs(forOp.getRegionIterArgs());
     auto yieldedValues = forOp.getBody()->getTerminator()->getOperands();
+
+    IRRewriter boundsBuilder(forOp.getContext());
+    boundsBuilder.setInsertionPoint(forOp);
+    // Scale 'step' by 'unrollFactor'.
+    Value unrollFactorCst =
+        boundsBuilder.create<arith::ConstantIndexOp>(loc, unrollFactor);
+    Value stepUnrolled =
+        boundsBuilder.create<arith::MulIOp>(loc, step, unrollFactorCst);
     forOp.setStep(stepUnrolled);
     generateUnrolledLoop(
         forOp.getBody(), forOp.getInductionVar(), unrollFactor,
@@ -435,11 +456,10 @@ LogicalResult mlir::loopUnrollByFactor(
           auto stride = b.create<arith::MulIOp>(
               loc, step, b.create<arith::ConstantIndexOp>(loc, i));
           return b.create<arith::AddIOp>(loc, iv, stride);
-          // auto d0 = b.getAffineDimExpr(0);
-          // auto bumpMap = AffineMap::get(1, 0, d0 + i * step);
-          // return b.create<affine::AffineApplyOp>(forOp.getLoc(), bumpMap, iv);
         },
-        annotateFn, iterArgs, yieldedValues);
+        /*annotateFn=*/annotateFn,
+        /*iterArgs=*/iterArgs, /*yieldedValues=*/yieldedValues);
+
     // Promote the loop body up if this has turned into a single iteration loop.
     (void)forOp.promoteIfSingleIteration(boundsBuilder);
   return success();
