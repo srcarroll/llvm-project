@@ -1,7 +1,6 @@
 // RUN: mlir-opt -allow-unregistered-dialect %s -affine-loop-unroll="unroll-full" | FileCheck %s --check-prefix UNROLL-FULL
 // RUN: mlir-opt -allow-unregistered-dialect %s -affine-loop-unroll="unroll-full unroll-full-threshold=2" | FileCheck %s --check-prefix SHORT
 // RUN: mlir-opt -allow-unregistered-dialect %s -affine-loop-unroll="unroll-factor=4" | FileCheck %s --check-prefix UNROLL-BY-4
-// RUN: mlir-opt -allow-unregistered-dialect %s -affine-loop-unroll="unroll-factor=1" | FileCheck %s --check-prefix UNROLL-BY-1
 // RUN: mlir-opt -allow-unregistered-dialect %s -affine-loop-unroll="unroll-factor=5 cleanup-unroll=true" | FileCheck %s --check-prefix UNROLL-CLEANUP-LOOP
 
 // UNROLL-FULL-DAG: [[$MAP0:#map[0-9]*]] = affine_map<(d0) -> (d0 + 1)>
@@ -621,16 +620,6 @@ func.func @loop_nest_non_trivial_multiple_upper_bound_alt(%M : index, %N : index
   return
 }
 
-// UNROLL-BY-1-LABEL: func @unroll_by_one_should_promote_single_iteration_loop()
-func.func @unroll_by_one_should_promote_single_iteration_loop() {
-  affine.for %i = 0 to 1 {
-    %x = "foo"(%i) : (index) -> i32
-  }
-  return
-// UNROLL-BY-1-NEXT: %c0 = arith.constant 0 : index
-// UNROLL-BY-1-NEXT: %0 = "foo"(%c0) : (index) -> i32
-// UNROLL-BY-1-NEXT: return
-}
 
 // Test unrolling with affine.for iter_args.
 

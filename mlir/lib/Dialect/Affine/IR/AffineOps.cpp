@@ -8,6 +8,8 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
+#include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/AffineExprVisitor.h"
@@ -2287,11 +2289,79 @@ struct AffineForEmptyLoopFolder : public OpRewritePattern<AffineForOp> {
     return success();
   }
 };
+
+/// Helper to replace uses of loop carried values (iter_args) and loop
+/// yield values while promoting single iteration affine.for ops.
+static void replaceIterArgsAndYieldResults(AffineForOp forOp) {
+  // Replace uses of iter arguments with iter operands (initial values).
+  auto iterOperands = forOp.getInits();
+  auto iterArgs = forOp.getRegionIterArgs();
+  for (auto e : llvm::zip(iterOperands, iterArgs))
+    std::get<1>(e).replaceAllUsesWith(std::get<0>(e));
+
+  // Replace uses of loop results with the values yielded by the loop.
+  auto outerResults = forOp.getResults();
+  auto innerResults = forOp.getBody()->getTerminator()->getOperands();
+  for (auto e : llvm::zip(outerResults, innerResults))
+    std::get<0>(e).replaceAllUsesWith(std::get<1>(e));
+}
+/// Rewriting pattern that erases loops that are known not to iterate, replaces
+/// single-iteration loops with their bodies, and removes empty loops that
+/// iterate at least once and only return values defined outside of the loop.
+struct SimplifyTrivialLoops : public OpRewritePattern<AffineForOp> {
+  using OpRewritePattern<AffineForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AffineForOp op,
+                                PatternRewriter &rewriter) const override {
+    // TODO: replace all the below with `promoteIfSingleIteration` when that gets moved/fixed
+    std::optional<uint64_t> tripCount = getConstantTripCount(op);
+    // printf("tripCount = %d\n", tripCount.value());
+    if (!tripCount || *tripCount != 1) {
+      return rewriter.notifyMatchFailure(op, "could not determine constant trip count or is > 1");
+    }
+
+    // TODO: extend this for arbitrary affine bounds.
+    if (op.getLowerBoundMap().getNumResults() != 1)
+      return failure();
+
+    // Replaces all IV uses to its single iteration value.
+    auto iv = op.getInductionVar();
+    auto *parentBlock = op->getBlock();
+    if (!iv.use_empty()) {
+      if (op.hasConstantLowerBound()) {
+        auto constOp = rewriter.create<arith::ConstantIndexOp>(
+            op.getLoc(), op.getConstantLowerBound());
+        iv.replaceAllUsesWith(constOp);
+      } else {
+        auto lbOperands = op.getLowerBoundOperands();
+        auto lbMap = op.getLowerBoundMap();
+        if (lbMap == rewriter.getDimIdentityMap()) {
+          // No need of generating an affine.apply.
+          iv.replaceAllUsesWith(lbOperands[0]);
+        } else {
+          auto affineApplyOp =
+              rewriter.create<AffineApplyOp>(op.getLoc(), lbMap, lbOperands);
+          iv.replaceAllUsesWith(affineApplyOp);
+        }
+      }
+    }
+
+    replaceIterArgsAndYieldResults(op);
+
+    // Move the loop body operations, except for its terminator, to the loop's
+    // containing block.
+    rewriter.eraseOp(&op.getBody()->back());
+    parentBlock->getOperations().splice(Block::iterator(op),
+                                        op.getBody()->getOperations());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 } // namespace
 
 void AffineForOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                               MLIRContext *context) {
-  results.add<AffineForEmptyLoopFolder>(context);
+  results.add<AffineForEmptyLoopFolder, SimplifyTrivialLoops>(context);
 }
 
 OperandRange AffineForOp::getEntrySuccessorOperands(RegionBranchPoint point) {

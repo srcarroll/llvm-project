@@ -1323,12 +1323,10 @@ func.func @simplify_bounds_tiled() {
       }
     }
   }
-  // CHECK:      affine.for
   // CHECK-NEXT:   affine.for
   // CHECK-NEXT:     affine.for %{{.*}} = 0 to 32 step 16
   // CHECK-NEXT:       affine.for %{{.*}} = 0 to 32 step 16
   // CHECK-NEXT:         affine.for %{{.*}} = 0 to 2
-  // CHECK-NEXT:           affine.for %{{.*}} = 0 to 16 step 16
 
   return
 }
@@ -1350,8 +1348,8 @@ func.func @simplify_min_max_multi_expr() {
     // CHECK: affine.for
     affine.for %j = 0 to 4 {
       // The first upper bound expression will not be lower than -9. So, it's redundant.
-      // CHECK-NEXT: affine.for %{{.*}} = -10 to -9
-      affine.for %k = -10 to min affine_map<(d0, d1) -> (4 * d0 - 3 * d1, -9)>(%i, %j) {
+      // CHECK-NEXT: affine.for %{{.*}} = -12 to -9
+      affine.for %k = -12 to min affine_map<(d0, d1) -> (4 * d0 - 3 * d1, -9)>(%i, %j) {
         "test.foo"() : () -> ()
       }
     }
@@ -1370,9 +1368,9 @@ func.func @simplify_min_max_multi_expr() {
     }
   }
 
-  // CHECK: affine.for %{{.*}} = 0 to 1
+  // CHECK: affine.for %{{.*}} = 0 to 2
   affine.for %i = 0 to 2 {
-    affine.for %j = max affine_map<(d0) -> (d0 floordiv 2, 0)>(%i) to 1 {
+    affine.for %j = max affine_map<(d0) -> (d0 floordiv 2, 0)>(%i) to 2 {
       "test.foo"() : () -> ()
     }
   }
@@ -1451,4 +1449,17 @@ func.func @mod_of_mod(%lb: index, %ub: index, %step: index) -> (index, index) {
   // Simplify: (ub - (ub - lb) % step - lb) % step == 0
   %1 = affine.apply affine_map<()[s0, s1, s2] -> ((s0 - ((s0 - s2) mod s1) - s2) mod s1)> ()[%ub, %step, %lb]
   return %0, %1 : index, index
+}
+
+// -----
+
+// CHECK-LABEL: func @unroll_by_one_should_promote_single_iteration_loop()
+func.func @unroll_by_one_should_promote_single_iteration_loop() {
+  affine.for %i = 0 to 1 {
+    %x = "foo"(%i) : (index) -> i32
+  }
+  return
+// CHECK-NEXT: %c0 = arith.constant 0 : index
+// CHECK-NEXT: %0 = "foo"(%c0) : (index) -> i32
+// CHECK-NEXT: return
 }
