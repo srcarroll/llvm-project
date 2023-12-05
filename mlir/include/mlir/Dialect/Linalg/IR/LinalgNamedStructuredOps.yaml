@@ -2892,6 +2892,8 @@ metadata: !LinalgOpMetadata
     them to the same data type as the accumulator/output.
   implements:
   - LinalgConvolutionOpInterface
+  defines:
+  - hasCanonicalizer
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig

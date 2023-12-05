@@ -1185,6 +1185,77 @@ LogicalResult GenericOp::fold(FoldAdaptor, SmallVectorImpl<OpFoldResult> &) {
 }
 
 //===----------------------------------------------------------------------===//
+// ConvolutionOp
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+struct GroupedConvolutionToDepthwiseConvolutionOp
+    : public OpRewritePattern<Conv2DNgchwFgchwOp> {
+  using OpRewritePattern<Conv2DNgchwFgchwOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Conv2DNgchwFgchwOp convOp,
+                                PatternRewriter &rewriter) const override {
+
+    Value image = convOp.image();
+    Value filter = convOp.filter();
+    Value init = convOp.getDpsInitOperand(0)->get();
+    const ShapedType imageType = image.getType().cast<ShapedType>();
+    const ShapedType filterType = filter.getType().cast<ShapedType>();
+    const ShapedType initType = init.getType().cast<ShapedType>();
+
+    // Only canonicalize if group size is equal to input/output channel size
+    if ((imageType.isDynamicDim(1) || imageType.isDynamicDim(2)) ||
+        (imageType.getShape()[2] != 1) || (initType.getShape()[2] != 1) ||
+        (filterType.getShape()[2] != 1))
+      return failure();
+
+    const SmallVector<ReassociationIndices> inOutReassociation{
+        {0}, {1, 2}, {3}, {4}};
+    const SmallVector<ReassociationIndices> filterReassociation{
+        {0, 1, 2}, {3}, {4}};
+
+    if (isa<MemRefType>(imageType)) {
+      image = rewriter.create<memref::CollapseShapeOp>(convOp.getLoc(), image,
+                                                       inOutReassociation);
+      filter = rewriter.create<memref::CollapseShapeOp>(convOp.getLoc(), filter,
+                                                        filterReassociation);
+      init = rewriter.create<memref::CollapseShapeOp>(convOp.getLoc(), init,
+                                                      inOutReassociation);
+    } else if (isa<TensorType>(imageType)) {
+      image = rewriter.create<tensor::CollapseShapeOp>(convOp.getLoc(), image,
+                                                       inOutReassociation);
+      filter = rewriter.create<tensor::CollapseShapeOp>(convOp.getLoc(), filter,
+                                                        filterReassociation);
+      init = rewriter.create<tensor::CollapseShapeOp>(convOp.getLoc(), init,
+                                                      inOutReassociation);
+    }
+
+    auto newConvOp = rewriter.create<DepthwiseConv2DNchwChwOp>(
+        convOp.getLoc(), ValueRange{image, filter}, ValueRange{init});
+    if (isa<MemRefType>(imageType))
+      rewriter.replaceOp(convOp, newConvOp->getResults());
+    else if (isa<TensorType>(imageType)) {
+      Value result = rewriter
+                         .create<tensor::ExpandShapeOp>(
+                             convOp.getLoc(), initType, newConvOp.getResult(0),
+                             inOutReassociation)
+                         .getResult();
+      rewriter.replaceOp(convOp, result);
+    }
+
+    return success();
+  }
+};
+
+} // namespace
+
+void Conv2DNgchwFgchwOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                     MLIRContext *context) {
+  results.add<GroupedConvolutionToDepthwiseConvolutionOp>(context);
+}
+
+//===----------------------------------------------------------------------===//
 // MapOp
 //===----------------------------------------------------------------------===//
 
