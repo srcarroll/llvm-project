@@ -1663,28 +1663,28 @@ LogicalResult ReduceOp::verify() {
 //===----------------------------------------------------------------------===//
 
 // There must be a way to avoid defining the following 3 functions
-void mlir::linalg::detail::depthwise_convolution_impl::getEffects(
-    DepthwiseConvolutionOpInterface op,
+void mlir::linalg::detail::convolution_impl::getEffects(
+    ConvolutionOpInterface op,
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   getGenericEffectsImpl(effects, op.result(), op.image(), op.filter());
 }
 
-ParseResult mlir::linalg::detail::depthwise_convolution_impl::parse(
+ParseResult mlir::linalg::detail::convolution_impl::parse(
     OpAsmParser &parser, OperationState &result, bool isQuantized) {
   if (isQuantized)
     return parseNamedStructuredOp(
         parser, result, 5,
-        mlir::linalg::detail::depthwise_convolution_impl::
+        mlir::linalg::detail::convolution_impl::
             quantizedRegionBuilder);
   return parseNamedStructuredOp(
       parser, result, 3,
-      mlir::linalg::detail::depthwise_convolution_impl::regionBuilder);
+      mlir::linalg::detail::convolution_impl::regionBuilder);
 }
 
-void mlir::linalg::detail::depthwise_convolution_impl::print(
-    DepthwiseConvolutionOpInterface op, OpAsmPrinter &p) {
-  if (op.isQuantized())
+void mlir::linalg::detail::convolution_impl::print(
+    ConvolutionOpInterface op, OpAsmPrinter &p, bool isQuantized) {
+  if (isQuantized)
     printNamedStructuredOp(p, op.getOperation(),
                            ValueRange{op.image(), op.filter(),
                                       op->getOperand(2), op->getOperand(3)},
@@ -1696,10 +1696,10 @@ void mlir::linalg::detail::depthwise_convolution_impl::print(
 }
 
 // Build {mul, add} region for convolution
-void mlir::linalg::detail::depthwise_convolution_impl::regionBuilder(
+void mlir::linalg::detail::convolution_impl::regionBuilder(
     ImplicitLocOpBuilder &b, Block &block, ArrayRef<NamedAttribute> attrs) {
   assert(block.getNumArguments() == 3 &&
-         "DepthwiseConv1DOp regionBuilder expects 3 (>=0) args");
+         "ConvolutionInterface regionBuilder expects 3 (>=0) args");
   RegionBuilderHelper helper(block.getArgument(0).getContext(), block);
   SmallVector<Value> yields;
 
@@ -1716,10 +1716,10 @@ void mlir::linalg::detail::depthwise_convolution_impl::regionBuilder(
   helper.yieldOutputs(yields);
 }
 
-void mlir::linalg::detail::depthwise_convolution_impl::quantizedRegionBuilder(
+void mlir::linalg::detail::convolution_impl::quantizedRegionBuilder(
     ImplicitLocOpBuilder &b, Block &block, ArrayRef<NamedAttribute> attrs) {
   assert(block.getNumArguments() == 5 &&
-         "DepthwiseConvNDQOp regionBuilder expects 5 args");
+         "ConvolutionInterface regionBuilder expects 5 args");
   RegionBuilderHelper helper(block.getArgument(0).getContext(), block);
   Value value1 =
       helper.buildTypeFn(TypeFn::cast_signed, block.getArgument(4).getType(),
@@ -1758,6 +1758,22 @@ void DepthwiseConvNDQOp::getEffects(
   getGenericEffectsImpl(effects, getOperation()->getResults(), getDpsInputs(),
                         getDpsInits());
 }
+void GroupedConvNDOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  if (hasTensorSemantics())
+    return;
+  getGenericEffectsImpl(effects, getOperation()->getResults(), getDpsInputs(),
+                        getDpsInits());
+}
+// void GroupedConvNDQOp::getEffects(
+//     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+//         &effects) {
+//   if (hasTensorSemantics())
+//     return;
+//   getGenericEffectsImpl(effects, getOperation()->getResults(), getDpsInputs(),
+//                         getDpsInits());
+// }
 
 //===----------------------------------------------------------------------===//
 // TransposeOp

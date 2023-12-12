@@ -30,6 +30,7 @@ class IteratorTypeAttr;
 class LinalgOp;
 class ConvolutionOpInterface;
 class DepthwiseConvolutionOpInterface;
+class GroupedConvolutionOpInterface;
 
 namespace detail {
 /// Implementation of the method that check if given operands
@@ -121,24 +122,31 @@ namespace detail {
 namespace convolution_impl {
 DenseIntElementsAttr getStridesAttr(ConvolutionOpInterface op);
 DenseIntElementsAttr getDilationsAttr(ConvolutionOpInterface op);
+void regionBuilder(ImplicitLocOpBuilder &b, Block &block,
+                   ArrayRef<NamedAttribute> attrs);
+void quantizedRegionBuilder(ImplicitLocOpBuilder &b, Block &block,
+                            ArrayRef<NamedAttribute> attrs);
+ParseResult parse(OpAsmParser &parser, OperationState &result,
+                  bool isQuantized = false);
+void print(ConvolutionOpInterface op, OpAsmPrinter &p, bool isQuantized = false);
+void getEffects(
+    ConvolutionOpInterface op,
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects);
 } // namespace convolution_impl
 
 // Common implementations for DepthwiseConvolutionOpInterface
 namespace depthwise_convolution_impl {
 ArrayAttr getIndexingMaps(DepthwiseConvolutionOpInterface op);
 ArrayAttr getIteratorTypes(DepthwiseConvolutionOpInterface op);
-void regionBuilder(ImplicitLocOpBuilder &b, Block &block,
-                   ArrayRef<NamedAttribute> attrs);
-void quantizedRegionBuilder(ImplicitLocOpBuilder &b, Block &block,
-                            ArrayRef<NamedAttribute> attrs);
-void getEffects(
-    DepthwiseConvolutionOpInterface op,
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects);
-ParseResult parse(OpAsmParser &parser, OperationState &result,
-                  bool isQuantized = false);
-void print(DepthwiseConvolutionOpInterface op, OpAsmPrinter &p);
 } // namespace depthwise_convolution_impl
+
+// Common implementations for GroupedConvolutionOpInterface
+namespace grouped_convolution_impl {
+ArrayAttr getIndexingMaps(GroupedConvolutionOpInterface op);
+ArrayAttr getIteratorTypes(GroupedConvolutionOpInterface op);
+} // namespace depthwise_convolution_impl
+
 
 /// Returns true if the block contains a contraction of the following form:
 ///
@@ -198,6 +206,9 @@ LogicalResult verifyConvolutionInterface(Operation *op);
 
 /// Verify that `op` conforms to the DepthwiseConvolutionOpInterface.
 LogicalResult verifyDepthwiseConvolutionInterface(Operation *op);
+
+/// Verify that `op` conforms to the DepthwiseConvolutionOpInterface.
+LogicalResult verifyGroupedConvolutionInterface(Operation *op);
 
 /// Verify that `op` conforms to the FillOpInterface.
 LogicalResult verifyFillInterface(Operation *op);

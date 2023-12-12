@@ -950,4 +950,48 @@ def LinalgDepthwiseConvolutionOpInterface : OpInterface<"DepthwiseConvolutionOpI
   }];
 }
 
+def LinalgGroupedConvolutionOpInterface : OpInterface<"GroupedConvolutionOpInterface", [
+  LinalgConvolutionOpInterface]> {
+  let description = [{
+    A grouped convolution is defined in general terms:
+    1. It is a convolution as defined by `ConvolutionOpInterface`.
+    2. Operands have a the following distinct dimensions (excluding batch in input/output): group, channel, spatial
+    3. `input_rank == kernel_rank == output_rank` (including batch in input/output)
+    4. Reductions are along the input channel and spatial dimensions while group, output channel
+       and output spatial dimensions are parallel.
+  }];
+  let cppNamespace = "::mlir::linalg";
+  let verify = [{ return detail::verifyGroupedConvolutionInterface($_op); }];
+  let methods = [
+    InterfaceMethod<[{
+      Returns indexing maps for any spatial dimension.
+    }],
+    "::mlir::ArrayAttr", "getIndexingMaps", (ins),
+      /*methodBody=*/[{}],
+      /*defaultImplementation=*/[{
+        return detail::grouped_convolution_impl::getIndexingMaps($_op);
+      }]>,
+    InterfaceMethod<[{
+      Returns indexing maps for any spatial dimension.
+    }],
+    "::mlir::ArrayAttr", "getIteratorTypes", (ins),
+      /*methodBody=*/[{}],
+      /*defaultImplementation=*/[{
+        return detail::grouped_convolution_impl::getIteratorTypes($_op);
+      }]>,
+    InterfaceMethod<[{
+      Returns whether op is quantized or not.
+    }],
+    "bool", "isQuantized", (ins)
+    >
+  ];
+
+  let extraClassDeclaration = [{
+    // Returns channel first attribute.
+    bool getChannelFirst() {
+        return (*this)->getAttrOfType<BoolAttr>("channel_first").getValue();
+    }
+  }];
+}
+
 #endif // LINALG_IR_LINALGINTERFACES

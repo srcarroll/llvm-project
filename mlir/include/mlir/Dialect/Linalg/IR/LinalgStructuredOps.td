@@ -469,16 +469,16 @@ def DepthwiseConvNDOp : LinalgStructuredBase_Op<"depthwise_conv_nd",
     // TODO: Figure out how to move this to the interface
     let extraClassDeclaration = structuredOpsBaseDecls # [{
       void print(::mlir::OpAsmPrinter &printer) {
-        return detail::depthwise_convolution_impl::print(*this, printer);
+        return detail::convolution_impl::print(*this, printer);
       }
       static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
                                         ::mlir::OperationState &result) {
-        return detail::depthwise_convolution_impl::parse(parser, result);
+        return detail::convolution_impl::parse(parser, result);
       }
       static std::function<void(mlir::ImplicitLocOpBuilder &, mlir::Block &,
                                 mlir::ArrayRef<mlir::NamedAttribute>)>
       getRegionBuilder() {
-        return detail::depthwise_convolution_impl::regionBuilder;
+        return detail::convolution_impl::regionBuilder;
       }
       // Implement functions necessary for DestinationStyleOpInterface.
       MutableOperandRange getDpsInitsMutable() { return getInitsMutable(); }
@@ -568,21 +568,124 @@ def DepthwiseConvNDQOp : LinalgStructuredBase_Op<"depthwise_conv_nd_q",
     // TODO: Figure out how to move this to the interface
     let extraClassDeclaration = structuredOpsBaseDecls # [{
       void print(::mlir::OpAsmPrinter &printer) {
-        return detail::depthwise_convolution_impl::print(*this, printer);
+        return detail::convolution_impl::print(*this, printer, true);
       }
       static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
                                         ::mlir::OperationState &result) {
-        return detail::depthwise_convolution_impl::parse(parser, result, true);
+        return detail::convolution_impl::parse(parser, result, true);
       }
       static std::function<void(mlir::ImplicitLocOpBuilder &, mlir::Block &,
                                 mlir::ArrayRef<mlir::NamedAttribute>)>
       getRegionBuilder() {
-        return detail::depthwise_convolution_impl::quantizedRegionBuilder;
+        return detail::convolution_impl::quantizedRegionBuilder;
       }
       // Implement functions necessary for DestinationStyleOpInterface.
       MutableOperandRange getDpsInitsMutable() { return getInitsMutable(); }
       // DepthwiseConvolutionInterface implementations
       bool isQuantized() { return true; }
+    }];
+}
+
+//===----------------------------------------------------------------------===//
+// GroupedConvNDOp ops.
+//===----------------------------------------------------------------------===//
+
+def GroupedConvNDOp : LinalgStructuredBase_Op<"grouped_conv_nd",
+  [AttrSizedOperandSegments, LinalgGroupedConvolutionOpInterface]> {
+    
+  let summary = [{
+    Performs N-D grouped convolution with switchable channel position; either first or last.
+  }];
+  let description = [{
+    Allows any number of spatial dimensions but treats all of them as contiguous.  Throughout, `S`,
+    will represent all spatial dimensions.  Operand layouts are determined by the `channel_first`
+    `bool` attritbute.  When placing the channel dim first or last, the batch dim is excluded.  In
+    any case, the channel and spatial dims are in the same relative order for all operands.
+    
+    Domain: N, G, F, S, C, KS
+
+    Layouts:
+      `channel_first == true`:
+        Input: `NGCS`
+        Kernel: `FS`
+        Output: `NGFS`
+
+      `channel_first == false`:
+        Input: `NSGC`
+        Kernel: `SGFC`
+        Output: `NSGF`
+
+  }];
+
+    let arguments = (ins
+      Variadic<TensorOrMemref>:$inputs,
+      Variadic<TensorOrMemref>:$inits,
+      DefaultValuedAttr<BoolAttr, "true">:$channel_first,
+      OptionalAttr<I64ElementsAttr>:$strides,
+      OptionalAttr<I64ElementsAttr>:$dilations
+    );
+    let results = (outs Variadic<AnyRankedTensor>:$result_tensors);
+    let regions = (region AnyRegion:$region);
+
+    let skipDefaultBuilders = 1;
+    let builders = [
+      OpBuilder<
+      (ins "ValueRange":$inputs, "ValueRange":$inits, "bool":$channel_first,
+            CArg<"ArrayRef<NamedAttribute>", "{}">:$attributes),
+      [{
+        $_state.addAttribute(getChannelFirstAttrName($_state.name), $_builder.getBoolAttr(channel_first));
+        buildStructuredOp($_builder, $_state, std::nullopt, inputs, inits,
+          attributes, GroupedConvNDOp::getRegionBuilder());
+      }]>,
+      OpBuilder<
+      (ins "TypeRange":$resultTensorTypes, "ValueRange":$inputs,
+            "ValueRange":$inits, "bool":$channel_first,
+            CArg<"ArrayRef<NamedAttribute>", "{}">:$attributes),
+      [{
+        $_state.addAttribute(getChannelFirstAttrName($_state.name), $_builder.getBoolAttr(channel_first));
+        buildStructuredOp($_builder, $_state, resultTensorTypes,
+          inputs, inits, attributes, GroupedConvNDOp::getRegionBuilder());
+      }]>,
+      OpBuilder<
+      (ins "TypeRange":$resultTensorTypes, "ValueRange":$operands,
+            CArg<"ArrayRef<NamedAttribute>", "{}">:$attributes),
+      [{
+        $_state.addOperands(operands);
+        $_state.addAttributes(attributes);
+        $_state.addTypes(resultTensorTypes);
+        (void)$_state.addRegion();
+      }]>,
+      OpBuilder<
+      (ins "TypeRange":$resultTensorTypes, "ValueRange":$inputs,
+      "ValueRange":$inits, "Attribute":$channel_first, "Attribute":$strides, "Attribute":$dilations,
+      CArg<"ArrayRef<NamedAttribute>", "{}">:$attributes),
+      [{
+        $_state.addAttribute("channel_first", channel_first);
+        $_state.addAttribute("strides", strides);
+        $_state.addAttribute("dilations", dilations);
+        buildStructuredOp($_builder, $_state, resultTensorTypes, inputs, inits,
+          attributes, GroupedConvNDOp::getRegionBuilder());
+      }]>
+    ];
+
+    // TODO: Figure out how to move this to the interface
+    let extraClassDeclaration = structuredOpsBaseDecls # [{
+      void print(::mlir::OpAsmPrinter &printer) {
+        return detail::convolution_impl::print(*this, printer);
+      }
+      static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
+                                        ::mlir::OperationState &result) {
+        return detail::convolution_impl::parse(parser, result);
+      }
+      static std::function<void(mlir::ImplicitLocOpBuilder &, mlir::Block &,
+                                mlir::ArrayRef<mlir::NamedAttribute>)>
+      getRegionBuilder() {
+        return detail::convolution_impl::regionBuilder;
+      }
+      // Implement functions necessary for DestinationStyleOpInterface.
+      MutableOperandRange getDpsInitsMutable() { return getInitsMutable(); }
+      // DepthwiseConvolutionInterface implementations
+      bool isQuantized() {return false; }
     }];
 }
 

@@ -738,6 +738,78 @@ ArrayAttr mlir::linalg::detail::depthwise_convolution_impl::getIndexingMaps(
   return cached;
 }
 
+ArrayAttr mlir::linalg::detail::grouped_convolution_impl::getIteratorTypes(
+    GroupedConvolutionOpInterface op) {
+  int64_t numSpatialDims =
+      op.image().getType().cast<ShapedType>().getRank() - 3;
+  SmallVector<Attribute> iteratorTypes(
+      3 + numSpatialDims, IteratorTypeAttr::get(op.getContext(), par));
+  SmallVector<Attribute> reductions(
+      numSpatialDims + 1, IteratorTypeAttr::get(op.getContext(), red));
+  iteratorTypes.insert(iteratorTypes.end(), reductions.begin(),
+                       reductions.end());
+
+  return Builder(op.getContext()).getArrayAttr(iteratorTypes);
+}
+
+ArrayAttr mlir::linalg::detail::grouped_convolution_impl::getIndexingMaps(
+    GroupedConvolutionOpInterface op) {
+  ArrayAttr cached = op->getAttrOfType<ArrayAttr>(
+      LinalgDialect::kMemoizedIndexingMapsAttrName);
+  if (cached)
+    return cached;
+
+  MLIRContext *ctx = op.getContext();
+  auto numSpatial = op.image().getType().cast<ShapedType>().getRank() - 3;
+  // Domain: (n, g, f, os, c, ks)
+  AffineExpr n = getAffineDimExpr(0, ctx);
+  AffineExpr g = getAffineDimExpr(1, ctx);
+  AffineExpr f = getAffineDimExpr(2, ctx);
+  SmallVector<AffineExpr> s(
+      llvm::map_range(llvm::seq<int64_t>(3, numSpatial + 3),
+                      [&](int64_t d) { return getAffineDimExpr(d, ctx); }));
+  AffineExpr c = getAffineDimExpr(numSpatial + 3, ctx);
+  SmallVector<AffineExpr> ks(llvm::map_range(
+      llvm::seq<int64_t>(numSpatial + 4, 2 * (numSpatial + 1) + 2),
+      [&](int64_t d) { return getAffineDimExpr(d, ctx); }));
+
+  // Temp subsitute for channel position attr
+  int64_t channelPos = (op.getChannelFirst()) ? 1 : numSpatial + 1;
+
+  // Initialze operand accesses in nw order and insert c according to channel
+  // position
+  SmallVector<AffineExpr> inExprs = {n}, outExprs = {n};
+  SmallVector<AffineExpr> gc = {g, c};
+  SmallVector<AffineExpr> gf = {g, f};
+  SmallVector<AffineExpr> gfc = {g, f, c};
+  for (const auto &[sp, ksp, st, di] :
+       llvm::zip(s, ks, op.getStridesAttr().getValues<int64_t>(),
+                 op.getDilationsAttr().getValues<int64_t>())) {
+    inExprs.push_back(sp * st + ksp * di);
+    outExprs.push_back(sp);
+  }
+  SmallVector<AffineExpr> kExprs(ks);
+  inExprs.insert(inExprs.begin() + channelPos, gc.begin(), gc.end());
+  kExprs.insert(channelPos == 0 ? kExprs.begin()
+                                : kExprs.begin() + channelPos - 1,
+                gfc.begin(), gfc.end());
+  outExprs.insert(outExprs.begin() + channelPos, gf.begin(), gf.end());
+  SmallVector<AffineMap> maps(
+      {AffineMap::get(4 + 2 * numSpatial, 0, inExprs, ctx),
+       AffineMap::get(4 + 2 * numSpatial, 0, kExprs, ctx),
+       AffineMap::get(4 + 2 * numSpatial, 0, outExprs, ctx)});
+  if (op.isQuantized()) {
+    SmallVector<AffineMap> scalarMaps(
+        2, AffineMap::get(4 + 2 * numSpatial, 0, {}, ctx));
+    maps.insert(maps.end() - 1, scalarMaps.begin(), scalarMaps.end());
+  }
+
+  cached = Builder(ctx).getAffineMapArrayAttr(maps);
+  op->setAttr(LinalgDialect::kMemoizedIndexingMapsAttrName, cached);
+  return cached;
+}
+
+
 LogicalResult
 mlir::linalg::detail::verifyDepthwiseConvolutionInterface(Operation *op) {
   if (failed(verifyConvolutionInterface(op)))
@@ -753,6 +825,26 @@ mlir::linalg::detail::verifyDepthwiseConvolutionInterface(Operation *op) {
     if (imageRank != kernelRank || imageRank != initRank - 1)
       return op->emitError(
           "Rank relationship must be `in_rank == out_rank == kernel_rank + 1`");
+    return success();
+  }
+  return failure();
+}
+
+LogicalResult
+mlir::linalg::detail::verifyGroupedConvolutionInterface(Operation *op) {
+  if (failed(verifyConvolutionInterface(op)))
+    return failure();
+  if (GroupedConvolutionOpInterface conv =
+          dyn_cast<GroupedConvolutionOpInterface>(op)) {
+    const auto imageType = conv.image().getType().dyn_cast<ShapedType>();
+    const auto imageRank = imageType.getRank();
+    const auto kernelRank =
+        conv.filter().getType().cast<ShapedType>().getRank();
+    const auto initType = conv.init().getType().dyn_cast<ShapedType>();
+    const auto initRank = initType.getRank();
+    if (imageRank != kernelRank || imageRank != initRank)
+      return op->emitError(
+          "Rank relationship must be `in_rank == out_rank == kernel_rank`");
     return success();
   }
   return failure();
