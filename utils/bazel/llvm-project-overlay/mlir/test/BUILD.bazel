@@ -1040,6 +1040,8 @@ cc_library(
         "//mlir:FuncDialect",
         "//mlir:IR",
         "//mlir:Pass",
+        "//mlir:SCFDialect",
+        "//mlir:Transforms",
     ],
 )
 

@@ -3,12 +3,19 @@ add_mlir_library(MLIRBufferizationTestPasses
   TestOneShotModuleBufferize.cpp
   TestTensorCopyInsertion.cpp
   TestTensorLikeAndBufferLike.cpp
+  TestOwnershipBasedBufferDeallocation.cpp
 
   EXCLUDE_FROM_LIBMLIR
+
+  LINK_LIBS PUBLIC
+  MLIRArithDialect
 )
 mlir_target_link_libraries(MLIRBufferizationTestPasses PUBLIC
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
+  MLIRFuncDialect
+  MLIRGPUDialect
+  MLIRSCFDialect
   MLIRIR
   MLIRPass
   MLIRTestDialect

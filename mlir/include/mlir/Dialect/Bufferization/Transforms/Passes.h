@@ -21,6 +21,15 @@ class FuncOp;
 namespace bufferization {
 struct OneShotBufferizationOptions;
 
+/// Options for the LowerDeallocation pass and rewrite patterns.
+struct LowerDeallocationOptions {
+  /// Given a MemRef value, build the operation(s) necessary to properly
+  /// deallocate the value.
+  std::function<void(OpBuilder &, Location, Value)> buildDeallocOp =
+      [](OpBuilder &builder, Location loc, Value memref) {
+        memref::DeallocOp::create(builder, loc, memref);
+      };
+};
 /// Maps from symbol table to its corresponding dealloc helper function.
 using DeallocHelperMap = llvm::DenseMap<Operation *, func::FuncOp>;
 
@@ -31,10 +40,30 @@ using DeallocHelperMap = llvm::DenseMap<Operation *, func::FuncOp>;
 #define GEN_PASS_DECL
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h.inc"
 
+/// Creates an instance of the BufferDeallocation pass to free all allocated
+/// buffers.
+std::unique_ptr<Pass> createBufferDeallocationPass();
+
+/// Creates an instance of the OwnershipBasedBufferDeallocation pass to free all
+/// allocated buffers.
+std::unique_ptr<Pass> createOwnershipBasedBufferDeallocationPass(
+    const DeallocationOptions &options = DeallocationOptions());
+
+/// Creates a pass that optimizes `bufferization.dealloc` operations. For
+/// example, it reduces the number of alias checks needed at runtime using
+/// static alias analysis.
+std::unique_ptr<Pass> createBufferDeallocationSimplificationPass();
+
+/// Creates an instance of the LowerDeallocations pass to lower
+/// `bufferization.dealloc` operations to the `memref` dialect.
+std::unique_ptr<Pass> createLowerDeallocationsPass(
+    const LowerDeallocationOptions &options = LowerDeallocationOptions());
+
 /// Adds the conversion pattern of the `bufferization.dealloc` operation to the
 /// given pattern set for use in other transformation passes.
 void populateBufferizationDeallocLoweringPattern(
-    RewritePatternSet &patterns, const DeallocHelperMap &deallocHelperFuncMap);
+    RewritePatternSet &patterns, const DeallocHelperMap &deallocHelperFuncMap,
+    const LowerDeallocationOptions &options = LowerDeallocationOptions());
 
 /// Construct the library function needed for the fully generic
 /// `bufferization.dealloc` lowering implemented in the LowerDeallocations pass.
@@ -120,10 +149,9 @@ func::FuncOp buildDeallocationLibraryFunction(OpBuilder &builder, Location loc,
                                               SymbolTable &symbolTable);
 
 /// Run the ownership-based buffer deallocation.
-LogicalResult
-deallocateBuffersOwnershipBased(FunctionOpInterface op,
-                                DeallocationOptions options,
-                                SymbolTableCollection &symbolTables);
+LogicalResult deallocateBuffersOwnershipBased(
+    FunctionOpInterface op, SymbolTableCollection &symbolTables,
+    const DeallocationOptions &options = DeallocationOptions());
 
 // Options struct for BufferResultsToOutParams pass.
 // Note: defined only here, not in tablegen.

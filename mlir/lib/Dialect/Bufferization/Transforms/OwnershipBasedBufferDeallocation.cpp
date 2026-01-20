@@ -390,12 +390,6 @@ private:
   /// operations, etc.).
   void populateRemainingOwnerships(Operation *op);
 
-  /// Given an SSA value of MemRef type, returns the same of a new SSA value
-  /// which has 'Unique' ownership where the ownership indicator is guaranteed
-  /// to be always 'true'.
-  Value materializeMemrefWithGuaranteedOwnership(OpBuilder &builder,
-                                                 Value memref, Block *block);
-
   /// Returns whether the given operation implements FunctionOpInterface, has
   /// private visibility, and the private-function-dynamic-ownership pass option
   /// is enabled.
@@ -408,8 +402,8 @@ private:
   /// is requested does not match the block in which 'memref' is defined, the
   /// default implementation in
   /// `DeallocationState::getMemrefWithUniqueOwnership` is queried instead.
-  std::pair<Value, Value>
-  materializeUniqueOwnership(OpBuilder &builder, Value memref, Block *block);
+  Value materializeUniqueOwnership(OpBuilder &builder, Value memref,
+                                   Block *block);
 
   /// Checks all the preconditions for operations implementing the
   /// FunctionOpInterface that have to hold for the deallocation to be
@@ -447,7 +441,7 @@ private:
   DeallocationState state;
 
   /// Collects all pass options in a single place.
-  DeallocationOptions options;
+  const DeallocationOptions options;
 };
 
 } // namespace
@@ -456,13 +450,13 @@ private:
 // BufferDeallocation Implementation
 //===----------------------------------------------------------------------===//
 
-std::pair<Value, Value>
-BufferDeallocation::materializeUniqueOwnership(OpBuilder &builder, Value memref,
-                                               Block *block) {
+Value BufferDeallocation::materializeUniqueOwnership(OpBuilder &builder,
+                                                     Value memref,
+                                                     Block *block) {
   // The interface can only materialize ownership indicators in the same block
   // as the defining op.
   if (memref.getParentBlock() != block)
-    return state.getMemrefWithUniqueOwnership(builder, memref, block);
+    return state.getMemrefWithUniqueOwnership(options, builder, memref, block);
 
   Operation *owner = memref.getDefiningOp();
   if (!owner)
@@ -475,7 +469,7 @@ BufferDeallocation::materializeUniqueOwnership(OpBuilder &builder, Value memref,
         state, options, builder, memref);
 
   // Otherwise use the default implementation.
-  return state.getMemrefWithUniqueOwnership(builder, memref, block);
+  return state.getMemrefWithUniqueOwnership(options, builder, memref, block);
 }
 
 LogicalResult
@@ -727,39 +721,6 @@ BufferDeallocation::handleInterface(RegionBranchOpInterface op) {
   return newOp.getOperation();
 }
 
-Value BufferDeallocation::materializeMemrefWithGuaranteedOwnership(
-    OpBuilder &builder, Value memref, Block *block) {
-  // First, make sure we at least have 'Unique' ownership already.
-  std::pair<Value, Value> newMemrefAndOnwership =
-      materializeUniqueOwnership(builder, memref, block);
-  Value newMemref = newMemrefAndOnwership.first;
-  Value condition = newMemrefAndOnwership.second;
-
-  // Avoid inserting additional IR if ownership is already guaranteed. In
-  // particular, this is already the case when we had 'Unknown' ownership
-  // initially and a clone was inserted to get to 'Unique' ownership.
-  if (matchPattern(condition, m_One()))
-    return newMemref;
-
-  // Insert a runtime check and only clone if we still don't have ownership at
-  // runtime.
-  Value maybeClone = scf::IfOp::create(
-                         builder, memref.getLoc(), condition,
-                         [&](OpBuilder &builder, Location loc) {
-                           scf::YieldOp::create(builder, loc, newMemref);
-                         },
-                         [&](OpBuilder &builder, Location loc) {
-                           Value clone = bufferization::CloneOp::create(
-                               builder, loc, newMemref);
-                           scf::YieldOp::create(builder, loc, clone);
-                         })
-                         .getResult(0);
-  Value trueVal = buildBoolValue(builder, memref.getLoc(), true);
-  state.updateOwnership(maybeClone, trueVal);
-  state.addMemrefToDeallocate(maybeClone, maybeClone.getParentBlock());
-  return maybeClone;
-}
-
 FailureOr<Operation *>
 BufferDeallocation::handleInterface(BranchOpInterface op) {
   if (op->getNumSuccessors() > 1)
@@ -858,15 +819,23 @@ BufferDeallocation::handleInterface(MemoryEffectOpInterface op) {
 
   for (auto operand : llvm::make_filter_range(op->getOperands(), isMemref)) {
     if (op.getEffectOnValue<MemoryEffects::Free>(operand).has_value()) {
-      // The bufferization.manual_deallocation attribute can be attached to ops
-      // with an allocation and/or deallocation side effect. It indicates that
-      // the op is under a "manual deallocation" scheme. Deallocation ops are
-      // usually forbidden in the input IR (not supported by the buffer
-      // deallocation pass). However, if they are under manual deallocation,
-      // they can be safely ignored by the buffer deallocation pass.
-      if (!op->hasAttr(BufferizationDialect::kManualDeallocation))
-        return op->emitError(
-            "memory free side-effect on MemRef value not supported!");
+      if (options.isRelevantDeallocOp(op)) {
+        if (auto repl = options.getDeallocReplacement(op);
+            succeeded(repl) && options.removeExistingDeallocations) {
+          op->replaceAllUsesWith(repl.value());
+          op.erase();
+          return FailureOr<Operation *>(nullptr);
+        }
+        // The bufferization.manual_deallocation attribute can be attached to
+        // ops with an allocation and/or deallocation side effect. It indicates
+        // that the op is under a "manual deallocation" scheme. Deallocation ops
+        // are usually forbidden in the input IR (not supported by the buffer
+        // deallocation pass). However, if they are under manual deallocation,
+        // they can be safely ignored by the buffer deallocation pass.
+        if (!op->hasAttr(BufferizationDialect::kManualDeallocation))
+          return op->emitError(
+              "memory free side-effect on MemRef value not supported!");
+      }
 
       // Buffers that were allocated under "manual deallocation" may be
       // manually deallocated. We insert a runtime assertion to cover certain
@@ -888,6 +857,9 @@ BufferDeallocation::handleInterface(MemoryEffectOpInterface op) {
   for (auto res : llvm::make_filter_range(op->getResults(), isMemref)) {
     auto allocEffect = op.getEffectOnValue<MemoryEffects::Allocate>(res);
     if (allocEffect.has_value()) {
+      // Assuming that an alloc effect is interpreted as MUST and not MAY.
+      state.resetOwnerships(res, block);
+
       if (isa<SideEffects::AutomaticAllocationScopeResource>(
               allocEffect->getResource())) {
         // Make sure that the ownership of auto-managed allocations is set to
@@ -911,8 +883,15 @@ BufferDeallocation::handleInterface(MemoryEffectOpInterface op) {
         continue;
       }
 
-      state.updateOwnership(res, buildBoolValue(builder, op.getLoc(), true));
-      state.addMemrefToDeallocate(res, block);
+      if (options.isRelevantAllocOp(op)) {
+        state.updateOwnership(res, buildBoolValue(builder, op.getLoc(), true));
+        state.addMemrefToDeallocate(res, block);
+        continue;
+      }
+
+      // Alloc operations from other dialects are expected to have matching
+      // deallocation operations inserted by another pass.
+      state.updateOwnership(res, buildBoolValue(builder, op.getLoc(), false));
     }
   }
 
@@ -934,8 +913,14 @@ BufferDeallocation::handleInterface(RegionBranchTerminatorOpInterface op) {
       if (!isMemref(val.get()))
         continue;
 
-      val.set(materializeMemrefWithGuaranteedOwnership(builder, val.get(),
-                                                       op->getBlock()));
+      if (options.verifyFunctionBoundaryABI) {
+        Value ownership =
+            materializeUniqueOwnership(builder, val.get(), op->getBlock());
+        cf::AssertOp::create(
+            builder, op->getLoc(), ownership,
+            builder.getStringAttr("Must have ownership of operand #" +
+                                  Twine(val.getOperandNumber())));
+      }
     }
   }
 
@@ -1012,19 +997,26 @@ namespace {
 struct OwnershipBasedBufferDeallocationPass
     : public bufferization::impl::OwnershipBasedBufferDeallocationPassBase<
           OwnershipBasedBufferDeallocationPass> {
-  using Base::Base;
-
+  OwnershipBasedBufferDeallocationPass() = default;
+  OwnershipBasedBufferDeallocationPass(const DeallocationOptions &options) {
+    privateFuncDynamicOwnership.setValue(options.privateFuncDynamicOwnership);
+    verifyFunctionBoundaryABI.setValue(options.verifyFunctionBoundaryABI);
+    removeExistingDeallocations.setValue(options.removeExistingDeallocations);
+  }
   void runOnOperation() override {
     DeallocationOptions options;
-    options.privateFuncDynamicOwnership = privateFuncDynamicOwnership;
-
+    options.privateFuncDynamicOwnership =
+        privateFuncDynamicOwnership.getValue();
+    options.verifyFunctionBoundaryABI = verifyFunctionBoundaryABI.getValue();
+    options.removeExistingDeallocations =
+        removeExistingDeallocations.getValue();
     mlir::SymbolTableCollection symbolTables;
 
     auto status = getOperation()->walk([&](func::FuncOp func) {
       if (func.isExternal())
         return WalkResult::skip();
 
-      if (failed(deallocateBuffersOwnershipBased(func, options, symbolTables)))
+      if (failed(deallocateBuffersOwnershipBased(func, symbolTables, options)))
         return WalkResult::interrupt();
 
       return WalkResult::advance();
@@ -1041,11 +1033,21 @@ struct OwnershipBasedBufferDeallocationPass
 //===----------------------------------------------------------------------===//
 
 LogicalResult bufferization::deallocateBuffersOwnershipBased(
-    FunctionOpInterface op, DeallocationOptions options,
-    SymbolTableCollection &symbolTables) {
+    FunctionOpInterface op, SymbolTableCollection &symbolTables,
+    const DeallocationOptions &options) {
   // Gather all required allocation nodes and prepare the deallocation phase.
   BufferDeallocation deallocation(op, options, symbolTables);
 
   // Place all required temporary clone and dealloc nodes.
   return deallocation.deallocate(op);
+}
+
+//===----------------------------------------------------------------------===//
+// OwnershipBasedBufferDeallocationPass construction
+//===----------------------------------------------------------------------===//
+
+std::unique_ptr<Pass>
+mlir::bufferization::createOwnershipBasedBufferDeallocationPass(
+    const DeallocationOptions &options) {
+  return std::make_unique<OwnershipBasedBufferDeallocationPass>(options);
 }

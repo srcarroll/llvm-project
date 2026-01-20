@@ -5,9 +5,9 @@
 // no memref operands.
 
 // CHECK-LABEL: func private @no_interface_no_operands(
+//  CHECK-NEXT:   %[[false:.*]] = arith.constant false
 //  CHECK-NEXT:   %[[m:.*]] = bufferization.to_buffer
-//  CHECK-NEXT:   %[[clone:.*]] = bufferization.clone %[[m]]
-//  CHECK-NEXT:   return %[[clone]]
+//  CHECK-NEXT:   return %[[m]], %[[false]]
 func.func private @no_interface_no_operands(%t : tensor<?x?x?xf16>) -> memref<?x?x?xf16> {
   %0 = bufferization.to_buffer %t : tensor<?x?x?xf16> to memref<?x?x?xf16>
   return %0 : memref<?x?x?xf16>

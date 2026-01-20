@@ -1,6 +1,6 @@
 // RUN: mlir-opt -verify-diagnostics -ownership-based-buffer-deallocation \
 // RUN:   --buffer-deallocation-simplification -split-input-file %s | FileCheck %s
-// RUN: mlir-opt -verify-diagnostics -ownership-based-buffer-deallocation=private-function-dynamic-ownership=true -split-input-file %s > /dev/null
+// RUN: mlir-opt -verify-diagnostics -ownership-based-buffer-deallocation=private-function-dynamic-ownership=false -split-input-file %s > /dev/null
 
 // RUN: mlir-opt %s -buffer-deallocation-pipeline --split-input-file > /dev/null
 
@@ -100,7 +100,7 @@ func.func @dealloc_existing_clones(%arg0: memref<?x?xf64>, %arg1: memref<?x?xf64
 //       CHECK: (%[[ARG0:.*]]: memref<?x?xf64>, %[[ARG1:.*]]: memref<?x?xf64>)
 //       CHECK: %[[RES0:.*]] = bufferization.clone %[[ARG0]]
 //       CHECK: %[[RES1:.*]] = bufferization.clone %[[ARG1]]
-//  CHECK-NEXT: bufferization.dealloc (%[[RES1]] :{{.*}}) if (%true{{[0-9_]*}})
+//       CHECK: bufferization.dealloc (%[[RES1]] :{{.*}}) if (%true{{[0-9_]*}})
 //   CHECK-NOT: retain
 //  CHECK-NEXT: return %[[RES0]]
 
@@ -118,12 +118,10 @@ func.func @op_without_aliasing_and_allocation() -> memref<4xf32> {
 }
 
 // CHECK-LABEL: func @op_without_aliasing_and_allocation
+//       CHECK:   [[FALSE:%.+]] = arith.constant false
 //       CHECK:   [[GLOBAL:%.+]] = memref.get_global @__constant_4xf32
-//       CHECK:   [[RES:%.+]] = scf.if %false
-//       CHECK:     scf.yield [[GLOBAL]] :
-//       CHECK:     [[CLONE:%.+]] = bufferization.clone [[GLOBAL]]
-//       CHECK:     scf.yield [[CLONE]] :
-//       CHECK:   return [[RES]] :
+//       CHECK:   cf.assert %false, "Must have ownership of operand #0"
+//       CHECK:   return [[GLOBAL]] :
 
 // -----
 

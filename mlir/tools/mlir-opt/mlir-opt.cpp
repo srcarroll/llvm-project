@@ -138,6 +138,7 @@ void registerTestNVGPULowerings();
 void registerTestOpenACC();
 void registerTestOneShotModuleBufferizePass();
 void registerTestOpaqueLoc();
+void registerTestOwnershipBasedBufferDeallocationPass();
 void registerTestOpLoweringPasses();
 void registerTestPadFusion();
 void registerTestParallelLoopUnrollingPass();
@@ -288,6 +289,7 @@ static void registerTestPasses() {
   mlir::test::registerTestOpenACC();
   mlir::test::registerTestOneShotModuleBufferizePass();
   mlir::test::registerTestOpaqueLoc();
+  mlir::test::registerTestOwnershipBasedBufferDeallocationPass();
   mlir::test::registerTestOpLoweringPasses();
   mlir::test::registerTestPadFusion();
   mlir::test::registerTestParallelLoopUnrollingPass();

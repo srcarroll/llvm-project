@@ -8,17 +8,26 @@
 
 #include "mlir/Dialect/Bufferization/Pipelines/Passes.h"
 
+#include "mlir/Dialect/Bufferization/IR/BufferDeallocationOpInterface.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
+using namespace mlir;
+using namespace bufferization;
+
 //===----------------------------------------------------------------------===//
 // Pipeline implementation.
 //===----------------------------------------------------------------------===//
 
-void mlir::bufferization::buildBufferDeallocationPipeline(OpPassManager &pm) {
-  buildBufferDeallocationPipeline(pm, BufferDeallocationPipelineOptions());
+DeallocationOptions
+BufferDeallocationPipelineOptions::asDeallocationOptions() const {
+  DeallocationOptions opts;
+  opts.privateFuncDynamicOwnership = privateFunctionDynamicOwnership.getValue();
+  opts.verifyFunctionBoundaryABI = verifyFunctionBoundaryABI.getValue();
+  opts.removeExistingDeallocations = removeExistingDeallocations.getValue();
+  return opts;
 }
 
 void mlir::bufferization::buildBufferDeallocationPipeline(
@@ -27,10 +36,8 @@ void mlir::bufferization::buildBufferDeallocationPipeline(
       /*emitDeallocs=*/false};
   pm.addPass(memref::createExpandReallocPass(expandAllocPassOptions));
   pm.addPass(createCanonicalizerPass());
-
-  OwnershipBasedBufferDeallocationPassOptions deallocationOptions{
-      options.privateFunctionDynamicOwnership};
-  pm.addPass(createOwnershipBasedBufferDeallocationPass(deallocationOptions));
+  pm.addPass(createOwnershipBasedBufferDeallocationPass(
+      options.asDeallocationOptions()));
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createBufferDeallocationSimplificationPass());
   pm.addPass(createLowerDeallocationsPass());
